@@ -27,6 +27,7 @@ GitHub. See Python Software Foundation License and BSD licenses for these.
 #include <stdlib.h>
 
 #include <optional>
+#include <string>
 #include <string_view>
 #include <system_error>
 
@@ -2134,8 +2135,89 @@ double precise_xstrtod_with_end(const char *str, char **endptr, char decimal,
     }
   }
 
+  // With a thousands separator, strip it from the integer part (with the same
+  // rule as the loop below: at most one tsep after each integer digit) and
+  // hand the copy to fast_float, so the result is correctly rounded too.
+  if (tsep != '\0' && tsep != decimal && !isdigit_ascii(tsep) &&
+      (sci == 'e' || sci == 'E')) {
+    const char *p = str;
+    while (isspace_ascii(*p))
+      p++;
+
+    const char *q = p;
+    if (*q == '-' || *q == '+')
+      q++;
+    if (!isdigit_ascii(*q) && !(*q == decimal && isdigit_ascii(*(q + 1))))
+      goto fallback;
+
+    const char *token_end = end;
+    if (token_end == NULL) {
+      token_end = p;
+      while (*token_end && !isspace_ascii(*token_end))
+        token_end++;
+    }
+    if (q >= token_end)
+      goto fallback;
+
+    const size_t token_len = (size_t)(token_end - p);
+    const char *buf = p;
+    size_t len = token_len;
+    // Source position right after the integer part and its length in buf;
+    // the remainder (decimal part, exponent, trailing bytes) is copied as is,
+    // so positions past this point map one to one.
+    const char *src_int_end = p;
+    size_t buf_int_len = 0;
+    // Stripping only shrinks the token, so its length bounds the copy. Short
+    // tokens (the common case) use a stack buffer to avoid an allocation.
+    char stack_buf[64];
+    std::string heap_buf;
+    if (memchr(q, tsep, (size_t)(token_end - q)) != NULL) {
+      char *wbuf = stack_buf;
+      if (token_len > sizeof(stack_buf)) {
+        heap_buf.resize(token_len);
+        wbuf = heap_buf.data();
+      }
+      len = 0;
+      if (p < q)
+        wbuf[len++] = *p;
+      const char *src = q;
+      while (src < token_end && isdigit_ascii(*src)) {
+        wbuf[len++] = *src++;
+        src += (src < token_end && *src == tsep);
+      }
+      src_int_end = src;
+      buf_int_len = len;
+      memcpy(wbuf + len, src, (size_t)(token_end - src));
+      len += (size_t)(token_end - src);
+      buf = wbuf;
+    }
+
+    double value;
+    const char *parsed_end;
+    if (fast_float_strtod(buf, buf + len, &value, &parsed_end, decimal) == 0 &&
+        parsed_end >= buf + buf_int_len) {
+      if (maybe_int != NULL) {
+        *maybe_int = 1;
+        for (const char *c = buf; c < parsed_end; c++) {
+          if (*c == decimal || *c == 'e' || *c == 'E') {
+            *maybe_int = 0;
+            break;
+          }
+        }
+      }
+      const char *out = src_int_end + (parsed_end - (buf + buf_int_len));
+      if (skip_trailing)
+        while (isspace_ascii(*out))
+          out++;
+      if (endptr)
+        *endptr = (char *)out;
+      return value;
+    }
+  }
+
 fallback:
-    // Fallback for non-standard formats (custom tsep, or sci char).
+    // Fallback for non-standard formats (sci char other than e/E, a leading
+    // '+', a digit or decimal used as tsep, or inputs fast_float rejects).
     ;
   const char *p = str;
   const int max_digits = 17;

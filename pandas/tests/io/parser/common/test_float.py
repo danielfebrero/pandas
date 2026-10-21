@@ -256,6 +256,53 @@ def test_float_correctly_rounded(all_parsers, value):
     tm.assert_frame_equal(result, expected)
 
 
+@skip_pyarrow  # pyarrow does not support the 'thousands' option
+@pytest.mark.parametrize(
+    "value",
+    [
+        # 16-17 significant digits, as written by repr(): the converter used
+        # with ``thousands`` set was off by one ulp on these
+        "3,727.8057128496757",
+        "-1,009,136.0513675895",
+        "96,878.14555303303",
+        "-9,057,994.750860197",
+        # no separator in the token, but ``thousands`` is still set
+        "925.1020866780885",
+        "115.30675192824769",
+        "9,007,199,254,740,993",  # 2**53 + 1, rounds to 2**53
+        "1,234.5e-3",
+        # longer than the converter's stack buffer
+        "1,234,567." + "1" * 80,
+    ],
+)
+def test_float_correctly_rounded_thousands(all_parsers, value):
+    # GH#64395 follow-up: with ``thousands`` set, floats did not go through
+    # fast_float and were not always correctly rounded
+    parser = all_parsers
+    result = parser.read_csv(StringIO(f"data\n{value}\n0.5"), sep=";", thousands=",")
+    expected = pd.DataFrame({"data": [float(value.replace(",", "")), 0.5]})
+    tm.assert_frame_equal(result, expected, check_exact=True)
+
+
+@skip_pyarrow  # pyarrow does not support the 'thousands' option
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("3.727,8057128496757", 3727.8057128496757),
+        ("-1.009.136,0513675895", -1009136.0513675895),
+        ("115,30675192824769", 115.30675192824769),
+    ],
+)
+def test_float_correctly_rounded_thousands_decimal(all_parsers, value, expected):
+    # GH#64395 follow-up: same as above with a custom decimal separator
+    parser = all_parsers
+    data = f"data\n{value}\n0,5"
+    result = parser.read_csv(StringIO(data), sep=";", thousands=".", decimal=",")
+    tm.assert_frame_equal(
+        result, pd.DataFrame({"data": [expected, 0.5]}), check_exact=True
+    )
+
+
 @pytest.mark.parametrize(
     "value", ["81e31d04049863b72", "d81e31d04049863b72", "81e3104049863b72"]
 )
